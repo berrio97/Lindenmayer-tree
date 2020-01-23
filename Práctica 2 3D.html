@@ -1,0 +1,535 @@
+<!--ALVARO BERRIO GALINDO-->
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Árbol en 3D</title>
+<style>
+        body{ background-color: lightgrey; }
+      canvas{ float:left;background-color: DeepSkyBlue;border: 1px solid black; margin-left:150px;}
+         div{ display:block;}
+
+</style>
+  <!--se utiliza la biblioteca GlMatrix.js que he anexado-->
+  <script type="text/javascript" src="GlMatrix.js"></script>
+
+<script>
+
+  // ****************** Variables Globales
+  let   gl = null,
+        canvas = null,
+        glProgram = null,
+        fragmentShader = null,
+        vertexShader = null;
+  let   positionLocatAttrib =null,
+        colorLocatAttrib=null;
+
+  let   verticeBuffer = null;
+  let   vertices = []; //coord de los vértices
+
+
+  let   verticeColors = [], //colores
+        colorBuffer; //buffer de colores a cada vertice
+
+  let ratonAbajo = false;
+  let posRatonX = null;
+  let posRatonY = null;
+
+
+    let MvMatrix=null,
+        PMatrix=null;
+
+    let uMvMatrix=null, uPMatrix;
+
+
+    //variables del propio arbol
+		var ramas = 0;
+    var nhojas_flores = null;
+    var prof = null;
+    //el arbol empieza con el axioma "A"
+		var axioma = "A";
+    var reglas = [];
+		var arbol = axioma;
+
+
+/********************* 0. UTILIDADES **************************************/
+  /******   FunCiones de inicialización de matrices  ********* */
+
+      function inicializarMatrices(){
+      	MvMatrix=mat4.create();
+      	PMatrix=mat4.create();
+
+      	mat4.identity(MvMatrix);
+      	mat4.identity(PMatrix);
+
+        mat4.lookAt([4,0,0],[0,0,0],[0,1,0],MvMatrix)
+        mat4.perspective(radians(1500),1,0.1,10,PMatrix);
+
+      }
+/*********************** RATON Y TECLADO: Funciones de control del Movimiento y Rotación***/
+	/* Deteccion de eventos*/
+
+      function deteccionEventos(){
+      	canvas.onmousedown=pulsaRatonAbajo;
+      	document.onmouseup=pulsaRatonArriba;
+      	document.onmousemove=mueveRaton;
+      }
+     /* Gestion de ventos*/
+
+     function pulsaRatonAbajo(event) {
+        ratonAbajo = true;
+        posRatonX = event.clientX;
+        posRatonY = event.clientY;
+    }
+
+    function pulsaRatonArriba(event) {
+        ratonAbajo = false;
+    }
+
+    function mueveRaton(event) {
+        if (!ratonAbajo) {
+            return;
+        }
+        let nuevaX = event.clientX;
+        let nuevaY = event.clientY;
+        let deltaX = nuevaX - posRatonX;
+        let deltaY = nuevaY - posRatonY;
+
+        let idMatrix=mat4.create();
+        mat4.identity(idMatrix);
+
+        mat4.rotate(idMatrix,radians(deltaX/2), [0,1,0],idMatrix);
+        mat4.rotate(idMatrix,radians(deltaY/2), [1,0,0],idMatrix);
+
+        mat4.multiply(MvMatrix,idMatrix , MvMatrix);
+        posRatonX = nuevaX;
+        posRatonY = nuevaY;
+    }
+
+
+    function radians(degrees) {
+        return degrees * Math.PI / 180;
+    }
+
+
+
+/********************* 1. INIT WEBGL **************************************/
+function initWebGL()
+      {
+        canvas = document.getElementById("canvas");
+        gl = canvas.getContext("webgl");
+
+        if(gl)
+        {
+          setupWebGL();
+          initShaders();
+          deteccionEventos();
+          setupBuffers();
+          drawScene();
+          animacion();
+        }
+        else{
+          alert(  "El navegador no soporta WEBGL.");
+        }
+      }
+      /********************* 2.setupWEBGL **************************************/
+      function setupWebGL()
+      {
+        //Pone el color de fondo a verde ---para 2d no funciona
+        gl.clearColor(1.0, 1.0, 1.0, 1.0);
+
+        //Crea un viewport del tamaño del canvas
+        gl.viewport(0, 0, canvas.width, canvas.height);
+
+        // Modo ON DEPTH
+        gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+        gl.enable(gl.DEPTH_TEST);
+
+        //Inicializar matrices de movimeinto
+        inicializarMatrices();
+
+        gl.enable(gl.BLEND);
+
+
+
+      }
+      /********************* 3. INIT SHADER **************************************/
+      function initShaders()
+      {
+       // Esta función inicializa los shaders
+
+        //1.Obtengo la referencia de los shaders
+        let fs_source = document.getElementById('fragment-shader').innerHTML;
+        let vs_source = document.getElementById('vertex-shader').innerHTML;
+
+        //2. Compila los shaders
+        vertexShader = makeShader(vs_source, gl.VERTEX_SHADER);
+        fragmentShader = makeShader(fs_source, gl.FRAGMENT_SHADER);
+
+          //3. Crea un programa
+          glProgram = gl.createProgram();
+
+        //4. Adjunta al programa cada shader
+          gl.attachShader(glProgram, vertexShader);
+          gl.attachShader(glProgram, fragmentShader);
+          gl.linkProgram(glProgram);
+
+        if (!gl.getProgramParameter(glProgram, gl.LINK_STATUS)) {
+           alert("No se puede inicializar el Programa .");
+          }
+
+        //5. Usa el programa
+        gl.useProgram(glProgram);
+      }
+     /********************* 3.1. MAKE SHADER **************************************/
+      function makeShader(src, type)
+      {
+        //Compila cada  shader
+        let shader = gl.createShader(type);
+        gl.shaderSource(shader, src);
+        gl.compileShader(shader);
+
+        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+              alert("Error de compilación del shader: " + gl.getShaderInfoLog(shader));
+          }
+        return shader;
+      }
+
+     /********************* 4 SETUP BUFFERS  **************************************/
+      function setupBuffers()
+      {
+
+        // se crean las reglas de la gramatica
+        //A: plant, B: internode, C: internode2, F: avanzar, L:hojas_flores, l: hacer hoja,
+        //D:flores, f: hacer flores
+
+                reglas[0] = {
+                  a: "A",
+                  b: "FFF&B&[++^^C&&+D]--^^+!B&&-[^^C]++^^C"
+                }
+                reglas[1] = {
+                  a: "B",
+                  b: "&^F"
+                }
+                reglas[2] = {
+                  a: "C",
+                  b: "/^B+[+/C]--!&[--L]B-[-C]++^CD[--L]"
+                }
+                reglas[3] = {
+                  a: "L",
+                  b: "[+ll|-ll]"
+                }
+                reglas[4] = {
+                  a: "D",
+                  b: "[+F&&&&+ff-ff]"
+                }
+
+
+        //los vertices del terreno
+        vertices.push(-1, -0.7, -1,
+											 1, -0.7, 1,
+											-1, -0.7, 1,
+
+											 1, -0.7,  1,
+										 	 1, -0.7, -1,
+										 	-1, -0.7, -1)
+
+        //el color del terreno
+        for(var k=0;k<6;k++){
+					verticeColors.push(0.2,0.5,0.1);
+				}
+        //se inicializan las variables propias del arbol como el vector de las hojas_flores, sus colores y la longitud de las ramas y angulos
+        hojas_flores = [];
+        hojas_floresColors = [];
+        long = 0.09;
+        ang = radians(25);
+        nHojas = Math.random()*0.2+0.4//la probabilidad de que salgan hojas estara entre 0.4 y 0.6
+
+        //generar la gramatica del arbol de profundidad prof
+				prof = 8;
+				while(prof>0){
+					generar();
+					prof--;
+				}
+
+        //generar el arbol segun la gramatica creada
+				turtle();
+        //incluir las hojas y flores y sus colores en el array de vertices y en los colores
+        vertices = vertices.concat(hojas_flores);
+        verticeColors = verticeColors.concat(hojas_floresColors);
+
+
+        // Buffer que almacena los vértices
+        verticeBuffer = gl.createBuffer();
+       gl.bindBuffer(gl.ARRAY_BUFFER, verticeBuffer);
+       gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
+
+
+       //Busca dónde debe ir la posicion de los vértices en el programa.
+       positionLocatAttrib = gl.getAttribLocation(glProgram, "aVertexPosition");
+       gl.enableVertexAttribArray(positionLocatAttrib);
+       //Enlazo con las posiciones de los vértices
+       gl.bindBuffer(gl.ARRAY_BUFFER, verticeBuffer);
+       gl.vertexAttribPointer(positionLocatAttrib, 3, gl.FLOAT, false, 0, 0);
+
+
+            /* ******* COLORES ******* */
+
+        //OTRO BUFFER
+        colorBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(verticeColors), gl.STATIC_DRAW);
+
+            /*
+            ** BUFFER PARA ATRIBUTO COLOR DE VERTICES
+            */
+       colorLocatAttrib = gl.getAttribLocation(glProgram, "aVertexColor");
+       gl.enableVertexAttribArray(colorLocatAttrib);
+       gl.bindBuffer(gl.ARRAY_BUFFER, colorBuffer);
+       gl.vertexAttribPointer(colorLocatAttrib, 3, gl.FLOAT, false, 0, 0);
+
+        // Localiza la matriz en el glProgram
+        uMvMatrix = gl.getUniformLocation(glProgram, 'uMvMatrix');
+
+        // Localiza la matriz en el glProgram
+        uPMatrix = gl.getUniformLocation(glProgram, 'uPMatrix');
+
+      }
+
+          //esta funcion genera la gramatica sustituyendo los caracteres que cumplan el antecedente de alguna regla por el consecuente de la misma,
+          //si no casa con ningun antecedente, se mantiene ese caracter
+      		function generar(){
+      			var aux = "";
+            for (var i = 0; i < arbol.length; i++){
+              var encont = false;
+              var actual = arbol.charAt(i);
+              for (var j = 0; j < reglas.length; j++){
+                if( actual == reglas[j].a ){
+                  aux += reglas[j].b;
+                  encont = true;
+                }
+              }
+              if(!encont){
+                aux+=actual;
+              }
+            }
+            arbol = aux;
+      		}
+
+          //esta funcion genera el arbol recorriendo la variable arbol en donde esta almacenado el resultado de la gramatica
+      		function turtle (){
+      			var px = 0.0; //estas coordenadas conforman el punto del que parte el arbol
+      			var py = -0.7;
+      			var pz = 0.0;
+      			var auxiliares = []; //auxiliares y estado se usan cuando nos encontramos un corchete, para guardar el vector direccion actual y la posicion actual
+      			var estado = [];
+            var ru,rl,rh = null;//estas seran las matrices de rotacion
+            direccion = [0, 1, 0];//este vector establece la direccion hacia la que crecera la siguiente rama
+
+      			for(var i = 0; i < arbol.length; i++){
+      				var actual = arbol.charAt(i);
+              switch(actual){
+                case "F":
+                  vertices.push(px, py, pz);
+                  px = px+long*direccion[0]+(Math.random()*0.01-0.005); //los nuevos puntos se hallan sumando al anterior punto la longitud multiplicada
+                  py = py+long*direccion[1]+(Math.random()*0.01-0.005); // el vector direccion
+                  pz = pz+long*direccion[2]+(Math.random()*0.01-0.005);
+                  vertices.push(px, py, pz);
+
+                  //color del arbol
+                  for(var j=0; j<2; j++){
+                    verticeColors.push(83/255,53/255,10/255); //color de las ramas
+                  }
+                  ramas++;
+                  break;
+                //en los siguientes casos, segun el caracter, se multiplicara al vector direccion por una matriz de rotacion
+                case "+":
+                  ru = turn(-ang);
+                  direccion = mat3.multiplyVec3(ru, direccion);
+                  break;
+
+                case "-":
+                  ru = turn(ang);
+                  direccion = mat3.multiplyVec3(ru, direccion);
+                  break;
+
+                case "&":
+                  rl = pitch(-ang);
+                  direccion = mat3.multiplyVec3(rl, direccion);
+                  break;
+
+                case "^":
+                  rl = pitch(ang);
+                  direccion = mat3.multiplyVec3(rl, direccion);
+                  break;
+
+                case "!":
+                  rh = roll(-ang);
+                  direccion = mat3.multiplyVec3(rh, direccion);
+                  break;
+
+                case "/":
+                  rh = roll(ang);
+                  direccion = mat3.multiplyVec3(rh, direccion);
+                  break;
+
+                case "|":
+                  ru = turn(radians(180));
+                  direccion = mat3.multiplyVec3(ru, direccion);
+                  break;
+
+                //en este caso, se guarda el estado actual y se reduce la dimension de las ramas hijas
+                case "[":
+                  auxiliares.push(px,py,pz);
+                  estado.push(direccion[0],direccion[1],direccion[2]);
+                  long *= 0.67;
+                  break;
+                //se recupera el estado anterior y se vuelve a la longitud previa
+                case "]":
+                  pz = auxiliares.pop();
+                  py = auxiliares.pop();
+                  px = auxiliares.pop();
+                  direccion[2] = estado.pop();
+                  direccion[1] = estado.pop();
+                  direccion[0] = estado.pop();
+                  long /= 0.67;
+                  break;
+                //se crean las hojas
+                case "l":
+                  crear_hoja(px,py,pz);
+                  break;
+                //se crean las flores
+                case "f":
+                  crear_flor(px,py,pz);
+                  break;
+                default:
+                  break;
+              }
+            }
+          }
+
+          //crea hojas con una cierta probabilidad y una direccion aleatoria
+          function crear_hoja(c1,c2,c3){
+            if(Math.random()>nHojas){
+               var x = Math.random()*0.02-0.01;
+               var y = Math.random()*0.02-0.01;
+               var z = Math.random()*0.02-0.01;
+               hojas_flores.push(c1,      c2,      c3,
+                           c1-0.01+Math.random()*0.05, c2+0.01+Math.random()*0.05, c3+Math.random()*0.05,
+                           c1+x,c2+y,c3+z);
+
+                for (var j = 0; j<3; j++){
+                  hojas_floresColors.push(0.5,0.7,0.1);//color de las hojas
+                }
+              }
+            }
+
+      //crea las flores con direccion aleatoria
+      function crear_flor(c1,c2,c3){
+           var x = Math.random()*0.04-0.02;
+           var y = Math.random()*0.04-0.02;
+           var z = Math.random()*0.04-0.02;
+           hojas_flores.push(c1,      c2,      c3,
+                       c1-0.015, c2+0.015, c3,
+                       c1+x,c2+y,c3+z);
+
+            for (var j = 0; j<3; j++){
+              hojas_floresColors.push(0.8,0.8,0.8);//color de las flores
+            }
+      }
+
+
+
+      //matriz de giro sobre z
+      function turn(angulo){
+        matriz = mat3.create([ Math.cos(angulo),Math.sin(angulo),0,
+                              -Math.sin(angulo),Math.cos(angulo),0,
+                               0,               0,               1]);
+        return matriz;
+      }
+
+      //matriz de giro sobre y
+      function pitch(angulo){
+        matriz = mat3.create([Math.cos(angulo),0,-Math.sin(angulo),
+                              0,               1,                0,
+                              Math.sin(angulo),0, Math.cos(angulo)]);
+        return matriz;
+      }
+
+      //matriz de giro sobre x
+      function roll(angulo){
+        matriz = mat3.create([1,                 0,              0,
+                              0,Math.cos(angulo),-Math.sin(angulo),
+                              0,Math.sin(angulo), Math.cos(angulo)]);
+        return matriz;
+      }
+
+
+
+/********************* Draw Scene        *********************************** */
+  function drawScene(){
+
+        gl.uniformMatrix4fv(uMvMatrix, false, MvMatrix);
+        gl.uniformMatrix4fv(uPMatrix, false, PMatrix);
+        //se dibuja el terreno
+        gl.drawArrays(gl.TRIANGLES, 0,6);
+        //se dibuja el arbol
+        gl.drawArrays(gl.LINES, 6, ramas*2+9);
+        //se dibujan las hojas y flores
+        gl.drawArrays(gl.TRIANGLES, ramas*2+9,vertices.length)
+
+
+    }//de la funcion
+
+    function animacion(){
+
+        drawScene();
+        requestAnimationFrame(animacion);
+    }
+
+
+
+
+
+</script>
+<!-- ****************   VERTEX SHADER *******************-->
+<script id="vertex-shader" type="x-shader/x-vertex">
+
+  attribute vec3 aVertexPosition;
+  attribute vec3 aVertexColor;
+
+  varying highp vec4 vColor;
+//Matriz de transformación
+ uniform mat4 uMvMatrix;
+ uniform mat4 uPMatrix;
+
+void main() {
+
+  //AHORA transformo las coordenadas
+   gl_Position= uPMatrix*uMvMatrix*vec4(aVertexPosition,1.0);
+
+   gl_PointSize=10.0; //TAMAÑO DEL PUNTO
+
+   vColor= vec4(aVertexColor,1.0);
+
+}
+</script>
+<!-- ****************   FRAGMENT SHADER *******************-->
+<script id="fragment-shader" type="x-shader/x-fragment">
+//uniform vec4 uColor;
+varying  highp vec4 vColor;
+void main() {
+   gl_FragColor = vColor;
+}
+</script>
+
+
+</head>
+<body onload="initWebGL()">
+<div class="description">
+  <h1 style="margin-left:300px;"> Árbol en 3D </h1>
+</div>
+<canvas id="canvas" width="500" height="500"></canvas>
+
+</body>
+</html>
